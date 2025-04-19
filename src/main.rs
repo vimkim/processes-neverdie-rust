@@ -16,12 +16,22 @@ fn spawn_peer(bin: &str, role: &str, peer_pid: u32) -> Child {
 }
 
 fn monitor_loop(mut peer_pid: u32, bin: &str, role: &str) {
+    // decide which process we should spawn when our peer dies
+    let peer_role = if role == "master" {
+        "watcher"
+    } else {
+        "master"
+    };
+
     loop {
         sleep(Duration::from_secs(1));
         let pid = Pid::from_raw(peer_pid as i32);
         if nix::sys::signal::kill(pid, None).is_err() {
-            eprintln!("[{}] peer {} died → respawning", role, peer_pid);
-            let child = spawn_peer(bin, role, std::process::id());
+            eprintln!(
+                "[{}] peer {} died → respawning {}",
+                role, peer_pid, peer_role
+            );
+            let child = spawn_peer(bin, peer_role, std::process::id());
             peer_pid = child.id();
             eprintln!("[{}] new peer has PID {}", role, peer_pid);
         }
@@ -31,14 +41,12 @@ fn monitor_loop(mut peer_pid: u32, bin: &str, role: &str) {
 fn main() {
     // Skip the binary name
     let mut args = env::args().skip(1);
-    // Make `role` an owned String
     let mut role = String::from("master");
     let mut peer_pid = 0u32;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--role" => {
-                // take ownership of the next String
                 if let Some(r) = args.next() {
                     role = r;
                 }
@@ -52,18 +60,21 @@ fn main() {
         }
     }
 
-    // Ignore SIGCHLD so we don’t get zombies
+    // Ignore SIGCHLD so ended children don't become zombies
     unsafe {
         signal(Signal::SIGCHLD, SigHandler::SigIgn).unwrap();
     }
 
+    // path to our own binary
     let me = env::args().next().unwrap();
 
     if role == "master" {
+        // master always boots a watcher
         let watcher = spawn_peer(&me, "watcher", std::process::id());
         println!("[master] spawned watcher PID {}", watcher.id());
         monitor_loop(watcher.id(), &me, "master");
     } else {
+        // watcher just watches the given master PID
         println!("[watcher] watching master PID {}", peer_pid);
         monitor_loop(peer_pid, &me, "watcher");
     }
